@@ -259,7 +259,12 @@ $('aRange').onchange = async e => {
 };
 $('aOn').onchange = async e => {
   if (e.target.checked) {
-    try { await startAudio(); } catch (err) { e.target.checked = false; $('aInfo').textContent = 'Audio-Fehler: ' + err.message; }
+    try { await startAudio(); } catch (err) {
+      e.target.checked = false;
+      $('aInfo').textContent = err.name === 'NotAllowedError'
+        ? 'Mikrofon-Zugriff blockiert. Schloss-Symbol in der Adressleiste → Mikrofon erlauben, und in den Systemeinstellungen → Datenschutz → Mikrofon den Browser freigeben. Danach Seite neu laden.'
+        : 'Audio-Fehler: ' + err.message;
+    }
   } else stopAudio();
 };
 </script>
