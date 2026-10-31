@@ -44,7 +44,7 @@
   <section>
     <h2>Tap Tempo</h2>
     <button id="tap">TAP</button>
-    <div class="mute">Klick, Leertaste oder MIDI. Der erste Tap setzt Beat 1, weitere Taps richten die Phase aus.</div>
+    <div class="mute">Klick, Leertaste oder MIDI. Der erste Tap setzt Beat 1, weitere Taps richten die Phase aus. Sobald du aufhörst zu tappen, übernimmt die Audioanalyse die Feinkorrektur (Tempo, Drift, Phase).</div>
     <div class="row">
       <select id="midiDev"><option value="">MIDI: kein Gerät</option></select>
       <button id="learn">MIDI Learn</button>
@@ -102,9 +102,12 @@ $('plus').onclick = () => setBpm(curBpm + 1);
 $('bpmIn').onchange = e => e.target.value && setBpm(+e.target.value);
 
 // ---------- Tap tempo ----------
-let taps = [];
+const TAP_HOLD_MS = 2000;   // = tap sequence timeout; analysis takes over once tapping stops
+let taps = [], tapHoldUntil = 0;
 function tap() {
   const now = performance.now();
+  tapHoldUntil = now + TAP_HOLD_MS;
+  lastPhaseSent = 0;   // let the analysis correct the phase right after tapping
   if (taps.length && now - taps[taps.length - 1] > 2000) taps = [];
   taps.push(now);
   taps = taps.slice(-9);
@@ -175,7 +178,7 @@ class Rms extends AudioWorkletProcessor {
 }
 registerProcessor('rms', Rms);`;
 
-let ctx, stream, node, tracker, tOffset = Infinity, lastT = 0, timer, lastPhaseSent = 0;
+let ctx, stream, node, tracker, tOffset = Infinity, lastT = 0, lastAnalysedT = 0, lastPhaseSent = 0;
 
 async function listAudio() {
   const keep = store.get('audioDev', '');
@@ -207,12 +210,11 @@ async function startAudio() {
   tracker = new Tracker(128 / ctx.sampleRate, { minBpm, maxBpm });
   tOffset = Infinity;
   node.port.onmessage = e => onBlocks(e.data);
-  timer = setInterval(analyse, 500);
+  lastAnalysedT = 0;
   $('aInfo').textContent = 'Höre zu…';
 }
 
 function stopAudio() {
-  clearInterval(timer);
   node?.disconnect(); stream?.getTracks().forEach(t => t.stop()); ctx?.close();
   ctx = stream = node = tracker = null;
   $('level').style.width = '0'; $('aInfo').textContent = 'Aus';
@@ -224,6 +226,8 @@ function onBlocks({ t, v }) {
   lastT = t;
   tracker.push(v);
   $('level').style.width = Math.min(100, Math.max(...v) * 400) + '%';
+  // Driven by the audio clock, not setInterval: timers get throttled once the tab is in the background.
+  if (t - lastAnalysedT >= 0.5) { lastAnalysedT = t; analyse(); }
 }
 
 function analyse() {
@@ -236,7 +240,9 @@ function analyse() {
       : `Suche Tempo… (Sicherheit ${pct}%)`;
     return;
   }
-  $('aInfo').textContent = `Gelockt: ${r.bpm.toFixed(1)} BPM · Sicherheit ${pct}%`;
+  const held = performance.now() < tapHoldUntil;
+  $('aInfo').textContent = `Gelockt: ${r.bpm.toFixed(1)} BPM · Sicherheit ${pct}%` + (held ? ' · pausiert (Tap)' : '');
+  if (held) return;
   if (Math.abs(r.bpm - curBpm) > 0.05) setBpm(Math.round(r.bpm * 100) / 100);
   if ($('aPhase').checked && performance.now() - lastPhaseSent > 2000) {
     const agoMs = r.agoSamples * tracker.hop * 1000

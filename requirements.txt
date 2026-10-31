@@ -1,2 +1,2 @@
-aalink
-aiohttp
+aalink>=0.2.3,<0.3
+aiohttp>=3.9,<4
