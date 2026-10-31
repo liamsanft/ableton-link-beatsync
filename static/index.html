@@ -193,6 +193,7 @@ async function startAudio() {
   } });
   await listAudio();
   ctx = new AudioContext({ latencyHint: 'interactive' });
+  await ctx.resume();   // Safari starts suspended when created after an await
   const url = URL.createObjectURL(new Blob([workletSrc], { type: 'text/javascript' }));
   await ctx.audioWorklet.addModule(url);
   const src = ctx.createMediaStreamSource(stream);
