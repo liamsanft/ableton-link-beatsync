@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Link Beat Sync</title>
+<style>
+  :root { --bg:#14151a; --card:#1e2028; --fg:#eceef4; --mute:#8a8fa3; --acc:#ffb400; --ok:#3ddc84; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px system-ui,sans-serif; display:flex; justify-content:center; }
+  main { width:100%; max-width:480px; padding:20px 16px 40px; display:grid; gap:14px; }
+  section { background:var(--card); border-radius:12px; padding:16px; display:grid; gap:10px; }
+  h2 { margin:0; font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--mute); }
+  .bpm { font-size:72px; font-weight:700; text-align:center; font-variant-numeric:tabular-nums; line-height:1; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .row > * { flex:1; }
+  .dots { display:flex; gap:8px; justify-content:center; }
+  .dot { width:22px; height:22px; border-radius:50%; background:#33364a; }
+  .dot.on { background:var(--acc); }
+  button, select, input[type=number] { background:#2b2e3b; color:var(--fg); border:0; border-radius:8px; padding:10px; font:inherit; }
+  button { cursor:pointer; } button:hover { background:#363a4b; }
+  #tap { font-size:28px; font-weight:700; padding:28px; background:var(--acc); color:#000; }
+  #tap:active { filter:brightness(.8); }
+  label.sw { display:flex; justify-content:space-between; align-items:center; cursor:pointer; }
+  .mute { color:var(--mute); font-size:13px; }
+  .meter { height:6px; background:#33364a; border-radius:3px; overflow:hidden; }
+  .meter > div { height:100%; width:0; background:var(--ok); }
+  .peers { text-align:center; color:var(--mute); }
+</style>
+</head>
+<body>
+<main>
+  <section>
+    <div class="bpm" id="bpm">--</div>
+    <div class="dots" id="dots"></div>
+    <div class="peers" id="peers">Verbinde…</div>
+    <div class="row">
+      <button id="minus">−1</button>
+      <input type="number" id="bpmIn" min="20" max="300" step="0.1" placeholder="BPM">
+      <button id="plus">+1</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Tap Tempo</h2>
+    <button id="tap">TAP</button>
+    <div class="mute">Klick, Leertaste oder MIDI. Der erste Tap setzt Beat 1, weitere Taps richten die Phase aus.</div>
+    <div class="row">
+      <select id="midiDev"><option value="">MIDI: kein Gerät</option></select>
+      <button id="learn">MIDI Learn</button>
+    </div>
+    <div class="mute" id="midiMap">Keine Zuweisung</div>
+  </section>
+
+  <section>
+    <h2>Audioanalyse</h2>
+    <label class="sw">Analyse aktiv <input type="checkbox" id="aOn"></label>
+    <select id="aDev"><option value="">Standard-Eingang</option></select>
+    <label class="sw">Beat-Phase mitsynchronisieren <input type="checkbox" id="aPhase" checked></label>
+    <div class="row"><span class="mute">Latenz-Offset (ms)</span><input type="number" id="aLat" value="0" step="5"></div>
+    <div class="meter"><div id="level"></div></div>
+    <div class="mute" id="aInfo">Aus</div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const store = {
+  get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+
+// ---------- WebSocket to the Link server ----------
+let ws;
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage = e => render(JSON.parse(e.data));
+  ws.onclose = () => { $('peers').textContent = 'Getrennt – verbinde neu…'; setTimeout(connect, 1000); };
+}
+const send = o => ws.readyState === 1 && ws.send(JSON.stringify(o));
+connect();
+
+let curBpm = 120;
+for (let i = 0; i < 4; i++) { const d = document.createElement('div'); d.className = 'dot'; $('dots').append(d); }
+function render(s) {
+  curBpm = s.bpm;
+  $('bpm').textContent = s.bpm.toFixed(1);
+  const n = Math.floor(s.beat);
+  [...$('dots').children].forEach((d, i) => d.classList.toggle('on', i === n));
+  $('peers').textContent = `${s.peers} Peer${s.peers === 1 ? '' : 's'} im Link-Netzwerk`;
+}
+
+const setBpm = b => send({ type: 'tempo', bpm: b });
+$('minus').onclick = () => setBpm(curBpm - 1);
+$('plus').onclick = () => setBpm(curBpm + 1);
+$('bpmIn').onchange = e => e.target.value && setBpm(+e.target.value);
+
+// ---------- Tap tempo ----------
+let taps = [];
+function tap() {
+  const now = performance.now();
+  if (taps.length && now - taps[taps.length - 1] > 2000) taps = [];
+  taps.push(now);
+  taps = taps.slice(-9);
+  const first = taps.length === 1;
+  let bpm = null;
+  if (taps.length >= 2) bpm = 60000 / ((taps[taps.length - 1] - taps[0]) / (taps.length - 1));
+  send({ type: 'tap', bpm, first });
+}
+$('tap').onpointerdown = tap;
+addEventListener('keydown', e => {
+  if (e.code === 'Space' && !e.repeat && !/INPUT|SELECT/.test(e.target.tagName)) { e.preventDefault(); tap(); }
+});
+
+// ---------- MIDI ----------
+let midi, learning = false, mapping = store.get('midiMap', null);
+const showMap = () => $('midiMap').textContent = mapping
+  ? `Zuweisung: ${mapping.cc ? 'CC' : 'Note'} ${mapping.d1} (Kanal ${mapping.ch + 1})` : 'Keine Zuweisung';
+showMap();
+
+function onMidi(e) {
+  const [st, d1, d2] = e.data;
+  const type = st & 0xf0, ch = st & 0x0f;
+  const isNote = type === 0x90 && d2 > 0, isCC = type === 0xb0 && d2 > 0;
+  if (!isNote && !isCC) return;
+  if (learning) {
+    mapping = { cc: isCC, d1, ch };
+    store.set('midiMap', mapping);
+    learning = false; $('learn').textContent = 'MIDI Learn'; showMap();
+  } else if (mapping && mapping.cc === isCC && mapping.d1 === d1 && mapping.ch === ch) tap();
+}
+function bindMidi() {
+  if (!midi) return;
+  midi.inputs.forEach(i => i.onmidimessage = null);
+  const id = $('midiDev').value;
+  store.set('midiDev', id);
+  midi.inputs.forEach(i => { if (i.id === id) i.onmidimessage = onMidi; });
+}
+function listMidi() {
+  const keep = store.get('midiDev', '');
+  $('midiDev').innerHTML = '<option value="">MIDI: kein Gerät</option>';
+  midi.inputs.forEach(i => $('midiDev').add(new Option(i.name, i.id)));
+  $('midiDev').value = keep;
+  bindMidi();
+}
+if (navigator.requestMIDIAccess) {
+  navigator.requestMIDIAccess().then(m => { midi = m; m.onstatechange = listMidi; listMidi(); })
+    .catch(() => $('midiMap').textContent = 'MIDI-Zugriff verweigert');
+} else $('midiMap').textContent = 'Web MIDI nicht verfügbar – bitte Chrome oder Edge nutzen';
+$('midiDev').onchange = bindMidi;
+$('learn').onclick = () => {
+  learning = !learning;
+  $('learn').textContent = learning ? 'Warte auf MIDI…' : 'MIDI Learn';
+};
+
+// ---------- Audio analysis ----------
+// Worklet: RMS per 128-sample block of the low-passed input (kick-focused).
+const workletSrc = `
+class Rms extends AudioWorkletProcessor {
+  constructor() { super(); this.buf = []; this.n = 0; }
+  process(inputs) {
+    const ch = inputs[0][0];
+    if (!ch) return true;
+    let s = 0; for (let i = 0; i < ch.length; i++) s += ch[i] * ch[i];
+    this.buf.push(Math.sqrt(s / ch.length));
+    if (++this.n === 16) { this.port.postMessage({ t: currentTime, v: this.buf }); this.buf = []; this.n = 0; }
+    return true;
+  }
+}
+registerProcessor('rms', Rms);`;
+
+const MIN_BPM = 70, MAX_BPM = 180, WINDOW_S = 10;
+let lastT = 0, ctx, stream, node, hop, env = [], tOffset = Infinity, prev = 0;
+let estimates = [], lastSent = 0, timer;
+
+async function listAudio() {
+  const keep = store.get('audioDev', '');
+  const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput');
+  $('aDev').innerHTML = '<option value="">Standard-Eingang</option>';
+  devs.forEach(d => $('aDev').add(new Option(d.label || 'Eingang', d.deviceId)));
+  $('aDev').value = keep;
+}
+
+async function startAudio() {
+  const id = $('aDev').value;
+  stream = await navigator.mediaDevices.getUserMedia({ audio: {
+    deviceId: id ? { exact: id } : undefined,
+    echoCancellation: false, noiseSuppression: false, autoGainControl: false,
+  } });
+  await listAudio();
+  ctx = new AudioContext({ latencyHint: 'interactive' });
+  hop = 128 / ctx.sampleRate;
+  const url = URL.createObjectURL(new Blob([workletSrc], { type: 'text/javascript' }));
+  await ctx.audioWorklet.addModule(url);
+  const src = ctx.createMediaStreamSource(stream);
+  const lp = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 200, Q: 0.7 });
+  node = new AudioWorkletNode(ctx, 'rms');
+  src.connect(lp).connect(node);
+  env = []; estimates = []; tOffset = Infinity; prev = 0;
+  node.port.onmessage = e => onBlocks(e.data);
+  timer = setInterval(analyse, 1000);
+  $('aInfo').textContent = 'Höre zu…';
+}
+
+function stopAudio() {
+  clearInterval(timer);
+  node?.disconnect(); stream?.getTracks().forEach(t => t.stop()); ctx?.close();
+  ctx = stream = node = null;
+  $('level').style.width = '0'; $('aInfo').textContent = 'Aus';
+}
+
+function onBlocks({ t, v }) {
+  // map audio clock -> performance clock (min tracks the least-delayed message)
+  tOffset = Math.min(tOffset, performance.now() - t * 1000);
+  lastT = t;
+  let peak = 0;
+  for (const x of v) {
+    const l = Math.log1p(1000 * x);
+    env.push(Math.max(0, l - prev));  // half-wave flux of log energy = onset strength
+    prev = l; peak = Math.max(peak, x);
+  }
+  $('level').style.width = Math.min(100, peak * 400) + '%';
+  const max = Math.ceil(WINDOW_S / hop);
+  if (env.length > max) env = env.slice(env.length - max);
+}
+
+function analyse() {
+  const n = env.length;
+  if (n < 5 / hop) return;                       // need ~5 s of signal
+  const mean = env.reduce((a, b) => a + b, 0) / n;
+  const x = env.map(v => v - mean);
+  const lo = Math.floor(60 / MAX_BPM / hop), hi = Math.ceil(60 / MIN_BPM / hop);
+  const ac = [];
+  for (let lag = lo - 1; lag <= hi + 1; lag++) {
+    let s = 0; for (let i = lag; i < n; i++) s += x[i] * x[i - lag];
+    ac[lag] = s / (n - lag);
+  }
+  let best = 0, bestLag = 0;
+  for (let lag = lo; lag <= hi; lag++) {
+    const bpm = 60 / (lag * hop);
+    const w = Math.exp(-0.5 * (Math.log2(bpm / 120) / 0.6) ** 2);   // prefer ~120 BPM to avoid octave errors
+    const s = ac[lag] * w;
+    if (ac[lag] > ac[lag - 1] && ac[lag] >= ac[lag + 1] && s > best) { best = s; bestLag = lag; }
+  }
+  if (!bestLag) { $('aInfo').textContent = 'Kein Tempo erkannt'; return; }
+  // parabolic interpolation for sub-sample lag
+  const a = ac[bestLag - 1], b = ac[bestLag], c = ac[bestLag + 1];
+  const d = (a - 2 * b + c) ? 0.5 * (a - c) / (a - 2 * b + c) : 0;
+  const period = (bestLag + d) * hop;
+  const bpm = 60 / period;
+
+  estimates.push(bpm); estimates = estimates.slice(-5);
+  const med = [...estimates].sort((p, q) => p - q)[estimates.length >> 1];
+  $('aInfo').textContent = `Erkannt: ${med.toFixed(1)} BPM`;
+  if (estimates.length < 3) return;
+  if (Math.abs(med - curBpm) > 0.3) setBpm(Math.round(med * 10) / 10);
+
+  if ($('aPhase').checked && performance.now() - lastSent > 3000) {
+    sendPhase(period / hop);
+    lastSent = performance.now();
+  }
+}
+
+// find the beat-grid phase that best matches the onsets, then report when the last beat happened
+function sendPhase(periodSamples) {
+  const n = env.length, P = periodSamples;
+  let best = -1, bestPhi = 0;
+  for (let phi = 0; phi < P; phi += 1) {
+    let s = 0;
+    for (let k = phi; k < n; k += P) s += env[Math.round(k)] || 0;
+    if (s > best) { best = s; bestPhi = phi; }
+  }
+  const lastIdx = bestPhi + Math.floor((n - 1 - bestPhi) / P) * P;
+  const agoMs = (n - 1 - lastIdx) * hop * 1000
+    + (performance.now() - (tOffset + lastT * 1000))
+    + (ctx.baseLatency || 0) * 1000 + (+$('aLat').value || 0);
+  send({ type: 'phase', ago_ms: agoMs });
+}
+
+$('aLat').value = store.get('lat', 0);
+$('aLat').onchange = e => store.set('lat', +e.target.value);
+$('aDev').onchange = async e => {
+  store.set('audioDev', e.target.value);
+  if ($('aOn').checked) { stopAudio(); await startAudio(); }
+};
+$('aOn').onchange = async e => {
+  if (e.target.checked) {
+    try { await startAudio(); } catch (err) { e.target.checked = false; $('aInfo').textContent = 'Audio-Fehler: ' + err.message; }
+  } else stopAudio();
+};
+</script>
+</body>
+</html>
