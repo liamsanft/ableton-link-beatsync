@@ -1,5 +1,7 @@
-// Synthetic techno scenarios: node test/analyzer.test.js
-const { Tracker } = require('../static/analyzer.js');
+// Synthetic techno scenarios: npm test. Exits non-zero when a scenario misses the limits below.
+const LIMITS = { bpmErr: 0.3, phaseErrMs: 20, minValidShare: 0.8 };
+let failed = 0;
+import { Tracker } from '../static/js/analyzer.js';
 const sr = 48000, hop = 128 / sr;
 let seed = 1; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
 
@@ -40,7 +42,10 @@ function run(name, decks, dur, opts, expectBpm, truth) {
   const tail = log.filter(x => x.t > dur - 10 && x.valid);
   const bpmErr = tail.length ? Math.max(...tail.map(x => Math.abs(x.bpm - (expectBpm ?? x.trueBpm)))) : NaN;
   const phErr = tail.length ? Math.max(...tail.map(x => Math.abs(x.errMs))) : NaN;
-  console.log(`${name.padEnd(34)} lock@${firstLock?.toFixed(0) ?? '-'}s  bpmErr<=${bpmErr.toFixed(2)}  phaseErr<=${phErr.toFixed(0)}ms (mean ${(tail.reduce((a, x) => a + x.errMs, 0) / (tail.length || 1)).toFixed(1)}) valid=${tail.length}/${log.filter(x => x.t > dur - 10).length}`);
+  const recent = log.filter(x => x.t > dur - 10).length;
+  const ok = bpmErr <= LIMITS.bpmErr && phErr <= LIMITS.phaseErrMs && tail.length >= LIMITS.minValidShare * recent;
+  if (!ok) failed++;
+  console.log(`${ok ? 'ok  ' : 'FAIL'} ${name.padEnd(34)} lock@${firstLock?.toFixed(0) ?? '-'}s  bpmErr<=${bpmErr.toFixed(2)}  phaseErr<=${phErr.toFixed(0)}ms (mean ${(tail.reduce((a, x) => a + x.errMs, 0) / (tail.length || 1)).toFixed(1)}) valid=${tail.length}/${recent}`);
 }
 
 const T = {};
@@ -55,3 +60,5 @@ run('transition 130 -> 131.5 (2 decks)', [
   deck(131.5, 0.37, { gain: t => Math.min(1, Math.max(0, (t - 15) / 20)) }),
 ], 60, T, 131.5, 1);
 run('breakdown 16s then return', [deck(138, 0.21, { gain: t => (t > 20 && t < 36 ? 0 : 1) })], 60, T, 138);
+
+if (failed) { console.error(`${failed} scenario(s) failed`); process.exit(1); }

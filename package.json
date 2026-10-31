@@ -1,0 +1,6 @@
+{
+  "name": "ableton-link-beatsync",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node test/analyzer.test.js" }
+}
