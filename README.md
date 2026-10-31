@@ -52,4 +52,6 @@ python3 -m venv .venv
 - **Installation von aalink schlägt fehl**: Python-Version prüfen (`python3 --version`); unter Windows ggf. die „Build Tools for Visual Studio" installieren, falls kein fertiges Wheel verfügbar ist.
 - **Kein Mikrofon-/MIDI-Zugriff**: Seite in Chrome/Edge öffnen und die Berechtigung für localhost erlauben.
 
-Tests: `npm test`. Architektur und Konventionen: [AGENTS.md](AGENTS.md).
+„Sync zurücksetzen“ verwirft Tap-Folge und gelocktes Tempo und startet die Suche neu; Tempo und Takt in Link bleiben unverändert. Der Status der Analyse hat eine Farbanzeige (grau aus, gelb Suche, grün gelockt, blau Breakdown/Tempo halten, rot Eingang weg). Wird der Audio-Eingang getrennt, wartet die Analyse und startet selbst neu, sobald ein Gerät auftaucht.
+
+Tests: `npm test` (Analyzer) und `npm run test:server` (Server, braucht `.venv`). Architektur und Konventionen: [AGENTS.md](AGENTS.md).

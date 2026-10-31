@@ -9,6 +9,7 @@ Protocol (JSON over /ws)
 import asyncio
 import errno
 import json
+import math
 import sys
 import webbrowser
 from pathlib import Path
@@ -20,26 +21,38 @@ PORT = 8765
 STATIC = Path(__file__).parent / "static"
 MIN_BPM, MAX_BPM = 20.0, 300.0
 QUANTUM = 4
+LINK, CLIENTS, WAKE = web.AppKey("link", Link), web.AppKey("clients", set), web.AppKey("wake", asyncio.Event)
 MAX_SLEEP_S = 0.5  # upper bound so tempo/peer changes made by other Link apps show up quickly
 
 
+def finite(x):
+    """float(x), but NaN/inf are rejected (JSON allows them in Python, and min/max would let NaN through)."""
+    x = float(x)
+    if not math.isfinite(x):
+        raise ValueError("not finite")
+    return x
+
+
 def clamp_bpm(bpm):
-    return max(MIN_BPM, min(MAX_BPM, float(bpm)))
+    return max(MIN_BPM, min(MAX_BPM, finite(bpm)))
 
 
 def handle(link, msg):
+    if not isinstance(msg, dict):
+        raise TypeError("message must be an object")
     kind = msg.get("type")
     if kind == "tempo":
         link.tempo = clamp_bpm(msg["bpm"])
     elif kind == "tap":
-        if msg.get("bpm"):
-            link.tempo = clamp_bpm(msg["bpm"])
+        bpm = clamp_bpm(msg["bpm"]) if msg.get("bpm") else None   # validate before touching the link
+        if bpm:
+            link.tempo = bpm
         if msg.get("first"):
             link.force_beat(0.0)  # tap = beat 1 of the bar
         else:
             shift_to_grid(link, 0.0)
     elif kind == "phase":
-        shift_to_grid(link, float(msg["ago_ms"]), gain=0.5, deadband=0.02)
+        shift_to_grid(link, finite(msg["ago_ms"]), gain=0.5, deadband=0.02)
 
 
 def shift_to_grid(link, ago_ms, gain=1.0, deadband=0.01):
@@ -63,11 +76,11 @@ def snapshot(link):
 
 async def ws_handler(request):
     app = request.app
-    link = app["link"]
+    link = app[LINK]
     ws = web.WebSocketResponse(heartbeat=30)
     await ws.prepare(request)
-    app["clients"].add(ws)
-    app["wake"].set()
+    app[CLIENTS].add(ws)
+    app[WAKE].set()
     await ws.send_str(json.dumps(snapshot(link)))
     try:
         async for m in ws:
@@ -77,13 +90,13 @@ async def ws_handler(request):
                 except (ValueError, KeyError, TypeError):
                     pass
     finally:
-        app["clients"].discard(ws)
+        app[CLIENTS].discard(ws)
     return ws
 
 
 async def broadcast(app):
     """Push the state to all clients when it changes. Idle (no wakeups) while nobody is connected."""
-    link, clients, wake = app["link"], app["clients"], app["wake"]
+    link, clients, wake = app[LINK], app[CLIENTS], app[WAKE]
     last = None
     while True:
         if not clients:
@@ -108,16 +121,21 @@ async def index(request):
     return web.FileResponse(STATIC / "index.html")
 
 
+def make_app(link):
+    app = web.Application()
+    app[LINK] = link
+    app[CLIENTS] = set()
+    app[WAKE] = asyncio.Event()
+    app.add_routes([web.get("/", index), web.get("/ws", ws_handler)])
+    app.router.add_static("/static", STATIC)
+    return app
+
+
 async def main():
     link = Link(120.0)
     link.quantum = QUANTUM
     link.enabled = True
-    app = web.Application()
-    app["link"] = link
-    app["clients"] = set()
-    app["wake"] = asyncio.Event()
-    app.add_routes([web.get("/", index), web.get("/ws", ws_handler)])
-    app.router.add_static("/static", STATIC)
+    app = make_app(link)
     runner = web.AppRunner(app)
     await runner.setup()
     try:

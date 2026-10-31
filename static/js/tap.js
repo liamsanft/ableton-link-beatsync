@@ -11,6 +11,9 @@ const listeners = [];
 export const isTapHeld = () => performance.now() < holdUntil;
 export const onTap = fn => listeners.push(fn);
 
+/** Forget the tap sequence and release the analysis hold. */
+export function resetTaps() { taps = []; holdUntil = 0; }
+
 export function tap() {
   const now = performance.now();
   holdUntil = now + TAP_HOLD_MS;

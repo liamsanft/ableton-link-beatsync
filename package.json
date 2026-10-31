@@ -2,5 +2,8 @@
   "name": "ableton-link-beatsync",
   "private": true,
   "type": "module",
-  "scripts": { "test": "node test/analyzer.test.js" }
+  "scripts": {
+    "test": "node test/analyzer.test.js",
+    "test:server": ".venv/bin/python -m unittest discover -s test"
+  }
 }

@@ -7,6 +7,8 @@
 const MIN_CONF = 1.8;           // grid score vs. average phase; below this the estimate is ignored
 const DRIFT_TOLERANCE = 0.03;   // relative BPM deviation still treated as pitch drift of the locked tempo
 const DRIFT_FOLLOW = 0.7;       // how fast the lock follows drift (0..1 per analysis)
+const MIN_HIT_SHARE = 0.4;      // share of grid points that must carry an onset (a 4:3 polyrhythm hits only 1 in 4)
+const ONSET_BLOCKS = 0.5;       // flux peaks at the block end, the onset is on average mid-block
 
 export class Tracker {
   /** @param hop seconds per input value (128 / sampleRate) */
@@ -22,7 +24,7 @@ export class Tracker {
 
   reset() {
     this.n = 0;           // valid samples in env
-    this.prev = 0;
+    this.prev = -1;       // previous log energy, -1 = none yet (the first value must not count as an onset)
     this.lock = 0;        // locked BPM, 0 = searching
     this.cands = [];      // consecutive off-lock estimates
   }
@@ -36,7 +38,7 @@ export class Tracker {
     }
     for (let i = Math.max(0, k - cap); i < k; i++) {
       const l = Math.log1p(1000 * values[i]);
-      this.env[this.n++] = Math.max(0, l - this.prev);   // half-wave flux of log energy
+      this.env[this.n++] = this.prev < 0 ? 0 : Math.max(0, l - this.prev);   // half-wave flux of log energy
       this.prev = l;
     }
   }
@@ -58,11 +60,13 @@ export class Tracker {
     let avg = 0, m = 0;
     for (let phi = 0; phi < bp; phi += 2) { avg += gridScore(s, n, bp, phi); m++; }
     const conf = bscore / (avg / m + 1e-9);
-    if (conf < MIN_CONF) return { bpm: this.lock, conf, valid: false };
+    if (conf < MIN_CONF) return { bpm: this.lock, conf, valid: false, score: bscore };
+
+    if (gridHitShare(s, n, bp, bphi) < MIN_HIT_SHARE) return { bpm: this.lock, conf, valid: false, score: bscore };
 
     this.track(60 / (bp * hop), conf);
     const lastBeat = bphi + Math.floor((n - 1 - bphi) / bp) * bp;
-    return { bpm: this.lock, conf, valid: this.lock > 0, agoSamples: n - 1 - lastBeat };
+    return { bpm: this.lock, conf, valid: this.lock > 0, agoSamples: n - 1 - lastBeat + ONSET_BLOCKS, score: bscore };
   }
 
   // Coarse tempo: autocorrelation of the onset curve, reinforced by multiples of the lag
@@ -113,6 +117,18 @@ function gridScore(s, n, p, phi) {
     sum += s[i] * (1 - f) + s[i + 1] * f; cnt++;
   }
   return cnt ? sum / cnt : 0;
+}
+
+// Share of grid points whose onset energy is at least a quarter of the strongest grid point.
+function gridHitShare(s, n, p, phi) {
+  let max = 0, hits = 0, cnt = 0;
+  for (let pass = 0; pass < 2; pass++) {
+    for (let k = phi; k < n - 1; k += p) {
+      const i = Math.floor(k), f = k - i, v = s[i] * (1 - f) + s[i + 1] * f;
+      if (pass === 0) { if (v > max) max = v; } else { cnt++; if (v >= 0.25 * max) hits++; }
+    }
+  }
+  return cnt ? hits / cnt : 0;
 }
 
 // Fit period and phase of a beat grid around the coarse lag: coarse sweep of +-2%, then a fine sweep around the best.

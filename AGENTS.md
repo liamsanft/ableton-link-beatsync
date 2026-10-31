@@ -14,17 +14,21 @@ static/js/midi.js       Web MIDI, MIDI-Learn für Tap
 static/js/audio.js      Eingang → Kick-Filter → Worklet → Tracker → Tempo/Phase an Server
 static/js/rms-worklet.js  AudioWorklet: RMS pro 128-Samples-Block, in 16er-Batches
 static/js/analyzer.js   Tracker (reine Logik, kein DOM/Audio – läuft auch in Node)
-test/analyzer.test.js   Synthetische Techno-Szenarien, Exit-Code ≠ 0 bei Verfehlung
+test/analyzer.test.js   Synthetische Techno-Szenarien und Randfälle (Stille, Rauschen, falscher Bereich), Exit-Code ≠ 0 bei Verfehlung
+test/test_server.py     Server-Protokoll mit Fake-Link (unittest, kein Netzwerk nötig)
 ```
 
 ## Befehle
 - `npm test` – Analyzer-Tests (Node, keine Abhängigkeiten)
+- `npm run test:server` – Server-Tests (braucht `.venv` mit installierten Requirements)
 - `./start.command` / `start.bat` – venv anlegen, Server starten, Browser öffnen (http://localhost:8765, Chrome/Edge)
 
 ## Regeln und Fallstricke
 - **Ressourcen sparen**: Der Server sendet nur bei Zustandsänderung (≈ 1×/Beat) und schläft komplett, solange kein Client verbunden ist. Im Browser keine Timer für die Analyse (werden im Hintergrund gedrosselt) – alles läuft über die Audio-Uhr (Worklet-Nachrichten). Keine DOM-Arbeit in versteckten Tabs; Meter nur per `requestAnimationFrame` und `transform`. Im Analyzer keine Allokation pro Aufruf (Scratch-Puffer).
 - **Latenzkette**: Phase = Beat-Alter im Analysefenster + Nachrichtenverzögerung + `baseLatency` + manueller Offset. Änderungen an `latencyHint` oder Blockgröße verschieben die Phase.
 - **Tap hat Vorrang**: Der erste Tap setzt Beat 1 (`force_beat(0)`), die Analyse verschiebt später nie den Takt, nur die Phase innerhalb eines Beats (`shift_to_grid`, Gain 0.5).
-- Analyzer-Konstanten (`MIN_CONF`, Lock-Logik in `track()`) sind gegen die Tests getunt; nach Änderungen `npm test` laufen lassen.
+- **Phasen-Bias**: Der Analyzer selbst ist bias-frei (Test prüft |Mittelwert| ≤ 3 ms, Truth = echter Kick-Beginn). Was bleibt, ist die Verzögerung der Filterkette; `audio.js` misst sie zur Laufzeit per `getFrequencyResponse` (Gruppenlaufzeit bei 60 Hz) und addiert sie. Restfehler (Soundkarte, Ausgabe) deckt der manuelle Latenz-Offset ab.
+- **Sync zurücksetzen** (`resetSync()`): verwirft Tap-Folge und Tracker-Lock, lässt Tempo/Takt in Link unberührt.
+- Analyzer-Konstanten (`MIN_CONF`, `MIN_HIT_SHARE`, Lock-Logik in `track()`) sind gegen die Tests getunt; nach Änderungen `npm test` laufen lassen.
 - Abhängigkeiten sind gepinnt (`requirements.txt`); der Startscript installiert nur bei Änderung neu.
 - UI-Texte sind Deutsch, Code und Kommentare Englisch.

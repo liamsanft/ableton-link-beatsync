@@ -23,7 +23,12 @@ function connect() {
     link.bpm = lastState.bpm;
     if (!document.hidden) render(lastState);   // nothing to paint in a background tab
   };
-  ws.onclose = () => { $('peers').textContent = 'Getrennt – verbinde neu…'; setTimeout(connect, RECONNECT_MS); };
+  ws.onclose = () => {
+    lastState = null;
+    $('bpm').textContent = '--';   // do not show a stale tempo while the server is away
+    $('peers').textContent = 'Getrennt – verbinde neu…';
+    setTimeout(connect, RECONNECT_MS);
+  };
 }
 
 export function initLink() {

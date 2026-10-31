@@ -28,6 +28,8 @@
       <button id="learn">MIDI Learn</button>
     </div>
     <div class="mute" id="midiMap">Keine Zuweisung</div>
+    <button id="resetSync">Sync zurücksetzen</button>
+    <div class="mute">Verwirft Tap-Folge und gelocktes Tempo, die Analyse sucht neu. Tempo und Takt in Link bleiben unverändert.</div>
   </section>
 
   <section>
@@ -42,7 +44,7 @@
     <label class="sw">Beat-Phase mitsynchronisieren <input type="checkbox" id="aPhase" checked></label>
     <div class="row"><span class="mute">Latenz-Offset (ms)</span><input type="number" id="aLat" value="0" step="5"></div>
     <div class="meter"><div id="level"></div></div>
-    <div class="mute" id="aInfo">Aus</div>
+    <div class="mute status" id="aInfo" data-state="off">Aus</div>
   </section>
 </main>
 
