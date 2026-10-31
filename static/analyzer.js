@@ -2,7 +2,7 @@
 // Pipeline: onset strength -> coarse tempo (autocorrelation) -> fine tempo + phase (beat-grid fit)
 //           -> lock logic (stable through breakdowns, follows slow drift, switches on real tempo changes).
 class Tracker {
-  constructor(hop, { minBpm = 120, maxBpm = 150, windowS = 12 } = {}) {
+  constructor(hop, { minBpm = 120, maxBpm = 150, windowS = 10 } = {}) {
     Object.assign(this, { hop, minBpm, maxBpm, max: Math.ceil(windowS / hop) });
     this.reset();
   }
@@ -26,7 +26,7 @@ class Tracker {
   // Returns { bpm, conf, valid, agoSamples } or null while there is too little signal.
   analyse() {
     const n = this.env.length, hop = this.hop;
-    if (n < 6 / hop) return null;
+    if (n < 4 / hop) return null;
     const s = smooth(smooth(this.env));
     const lo = Math.floor(60 / this.maxBpm / hop), hi = Math.ceil(60 / this.minBpm / hop);
 
@@ -73,22 +73,22 @@ class Tracker {
     const valid = conf >= 1.8;
     if (!valid) return { bpm: this.lock, conf, valid: false };
 
-    this.track(bpm);
+    this.track(bpm, conf);
     const lastBeat = bphi + Math.floor((n - 1 - bphi) / bp) * bp;
     return { bpm: this.lock, conf, valid: this.lock > 0, agoSamples: n - 1 - lastBeat };
   }
 
-  track(bpm) {
+  track(bpm, conf) {
     const L = this.lock;
     if (L && Math.abs(bpm - L) / L < 0.03) {         // small deviation = pitch drift: follow smoothly
-      this.lock = L + 0.5 * (bpm - L);
+      this.lock = L + 0.7 * (bpm - L);
       this.cands = [];
       return;
     }
     // search / tempo change: need several consistent estimates before switching
     const last = this.cands[this.cands.length - 1];
     this.cands = last && Math.abs(bpm - last) / last < 0.01 ? [...this.cands, bpm] : [bpm];
-    if (this.cands.length >= (L ? 4 : 3)) {
+    if (this.cands.length >= (L ? 4 : conf >= 6 ? 2 : 3)) {
       this.lock = this.cands.reduce((a, b) => a + b) / this.cands.length;
       this.cands = [];
     }

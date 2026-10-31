@@ -1,37 +1,57 @@
-// Synthetic techno check: node test/analyzer.test.js
+// Synthetic techno scenarios: node test/analyzer.test.js
 const { Tracker } = require('../static/analyzer.js');
 const sr = 48000, hop = 128 / sr;
 let seed = 1; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
 
-// segments: {bpm, dur, kick} ; returns rms-per-block generator
-function run(name, segs, opts, expect) {
+// A deck plays kicks (sharp) and optional offbeat bass (soft attack) at a given tempo/offset, with gain over time.
+const deck = (bpm, off, o = {}) => ({ bpm, off, kick: 0.6, bass: 0, drift: 0, gain: () => 1, ...o });
+const env = (d, t) => {                                    // contribution of a deck at time t
+  const g = d.gain(t); if (g <= 0) return 0;
+  const u = t - d.off, bpm = d.bpm * (1 + d.drift * u / 60);
+  const beats = u * d.bpm / 60 + d.bpm * d.drift * u * u / 7200, ph = beats - Math.floor(beats);
+  const ts = ph * 60 / bpm;                                // seconds since last kick
+  let v = ts < 0.003 ? 0 : d.kick * Math.exp(-ts / 0.07);
+  if (d.bass) { const tb = ((ph + 0.5) % 1) * 60 / bpm; v += d.bass * (1 - Math.exp(-tb / 0.012)) * Math.exp(-tb / 0.15); }
+  return v * g;
+};
+
+function run(name, decks, dur, opts, expectBpm, truth) {
   const tr = new Tracker(hop, opts);
-  let t = 0.21, nextKick = t, bpmNow = segs[0].bpm, buf = [], clock = 0, kicks = [], log = [];
-  let tEnd = 0;
-  for (const seg of segs) {
-    tEnd += seg.dur;
-    while (clock < tEnd) {
-      if (clock >= nextKick) { if (seg.kick) kicks.push(nextKick); nextKick += 60 / seg.bpm; }
-      const sinceKick = kicks.length ? clock - kicks[kicks.length - 1] : 9;
-      const kick = seg.kick ? Math.exp(-sinceKick / 0.07) * 0.6 : 0;
-      const offHat = Math.abs(((clock - 0.21) * seg.bpm / 60) % 1 - 0.5) < 0.01 ? 0.03 : 0;
-      buf.push(0.08 + kick + offHat + rnd() * 0.02);
-      clock += hop;
-      if (buf.length === 16) { tr.push(buf); buf = []; if (Math.round(clock * 100) % 100 < 3) { const r = tr.analyse(); if (r) log.push({ t: clock, ago: (clock - kicks[kicks.length - 1]) / hop, ...r }); } }
+  let clock = 0, buf = [], log = [], firstLock = null;
+  while (clock < dur) {
+    let v = 0.08 + rnd() * 0.02; for (const d of decks) v += env(d, clock);
+    buf.push(v); clock += hop;
+    if (buf.length === 16) {
+      tr.push(buf); buf = [];
+      if (Math.round(clock / (16 * hop)) % Math.round(1 / (16 * hop)) === 0) {
+        const r = tr.analyse();
+        if (r) {
+          const d0 = decks[truth || 0], u = clock - d0.off, bpm = d0.bpm * (1 + d0.drift * u / 60);
+          const P = 60 / bpm / hop, beats = u * d0.bpm / 60 + d0.bpm * d0.drift * u * u / 7200;
+          const trueAgo = (beats - Math.floor(beats)) * P;
+          let e = r.valid ? (r.agoSamples - trueAgo) % P : NaN;
+          if (e > P / 2) e -= P; if (e < -P / 2) e += P;
+          log.push({ t: clock, ...r, errMs: e * hop * 1000, trueBpm: bpm });
+          if (r.valid && firstLock === null) firstLock = clock;
+        }
+      }
     }
   }
-  const last = log[log.length - 1];
-  const lastKick = kicks[kicks.length - 1], seg0 = segs.every(x => x.kick);
-  console.log(`${name}: bpm=${last.bpm.toFixed(2)} (expect ${expect}) conf=${last.conf.toFixed(2)} valid=${last.valid}`);
-  if (seg0) { const ago = last.ago, P = 60 / segs[segs.length-1].bpm / hop;
-    let d = (last.agoSamples - ago) % P; if (d > P / 2) d -= P; if (d < -P / 2) d += P;
-    console.log(`  phase error: ${(d * hop * 1000).toFixed(1)} ms`); }
-  return { tr, log, last };
+  const tail = log.filter(x => x.t > dur - 10 && x.valid);
+  const bpmErr = tail.length ? Math.max(...tail.map(x => Math.abs(x.bpm - (expectBpm ?? x.trueBpm)))) : NaN;
+  const phErr = tail.length ? Math.max(...tail.map(x => Math.abs(x.errMs))) : NaN;
+  console.log(`${name.padEnd(34)} lock@${firstLock?.toFixed(0) ?? '-'}s  bpmErr<=${bpmErr.toFixed(2)}  phaseErr<=${phErr.toFixed(0)}ms (mean ${(tail.reduce((a, x) => a + x.errMs, 0) / (tail.length || 1)).toFixed(1)}) valid=${tail.length}/${log.filter(x => x.t > dur - 10).length}`);
 }
 
-run('steady 133.7', [{ bpm: 133.7, dur: 40, kick: true }], {}, 133.7);
-run('steady 128', [{ bpm: 128, dur: 40, kick: true }], {}, 128);
-run('steady 146', [{ bpm: 146, dur: 40, kick: true }], {}, 146);
-const r = run('tempo change 130->141', [{ bpm: 130, dur: 30, kick: true }, { bpm: 141, dur: 40, kick: true }], {}, 141);
-const b = run('breakdown holds lock', [{ bpm: 135, dur: 30, kick: true }, { bpm: 135, dur: 10, kick: false }], {}, 135);
-console.log('  breakdown valid flags (last 5):', b.log.slice(-5).map(x => x.valid + '/' + x.conf.toFixed(1)).join(' '));
+const T = {};
+run('clean 133.7', [deck(133.7, 0.21)], 40, T, 133.7);
+run('clean 128 (wide range)', [deck(128, 0.33)], 40, { minBpm: 70, maxBpm: 180 }, 128);
+run('offbeat bass 0.5', [deck(135, 0.21, { bass: 0.5 })], 40, T, 135);
+run('offbeat bass 0.9 (> kick)', [deck(135, 0.21, { bass: 0.9 })], 40, T, 135);
+run('offbeat bass 0.9, wide range', [deck(135, 0.21, { bass: 0.9 })], 40, { minBpm: 70, maxBpm: 180 }, 135);
+run('pitch drift +1%/min', [deck(132, 0.1, { drift: 0.01 })], 60, T);
+run('transition 130 -> 131.5 (2 decks)', [
+  deck(130, 0.21, { gain: t => Math.max(0, 1 - Math.max(0, t - 20) / 20) }),
+  deck(131.5, 0.37, { gain: t => Math.min(1, Math.max(0, (t - 15) / 20)) }),
+], 60, T, 131.5, 1);
+run('breakdown 16s then return', [deck(138, 0.21, { gain: t => (t > 20 && t < 36 ? 0 : 1) })], 60, T, 138);

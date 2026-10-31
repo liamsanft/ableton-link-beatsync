@@ -206,7 +206,7 @@ async function startAudio() {
   tracker = new Tracker(128 / ctx.sampleRate, { minBpm, maxBpm });
   tOffset = Infinity;
   node.port.onmessage = e => onBlocks(e.data);
-  timer = setInterval(analyse, 1000);
+  timer = setInterval(analyse, 500);
   $('aInfo').textContent = 'Höre zu…';
 }
 
