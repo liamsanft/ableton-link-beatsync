@@ -23,15 +23,17 @@ def handle(link, msg):
         else:
             shift_to_grid(link, 0.0)
     elif kind == "phase":
-        shift_to_grid(link, float(msg["ago_ms"]))
+        shift_to_grid(link, float(msg["ago_ms"]), gain=0.5, deadband=0.02)
 
 
-def shift_to_grid(link, ago_ms):
-    """Align the nearest whole beat with an event that happened ago_ms ago."""
+def shift_to_grid(link, ago_ms, gain=1.0, deadband=0.01):
+    """Align the nearest whole beat with an event that happened ago_ms ago.
+
+    gain < 1 corrects only part of the error per call (smooth tracking)."""
     beat_at_event = link.beat - ago_ms / 60000.0 * link.tempo
     off = beat_at_event - round(beat_at_event)
-    if abs(off) > 0.01:
-        link.force_beat(link.beat - off)
+    if abs(off) > deadband:
+        link.force_beat(link.beat - off * gain)
 
 
 async def ws_handler(request):
@@ -80,6 +82,7 @@ async def main():
     app["link"] = link
     app["clients"] = set()
     app.add_routes([web.get("/", index), web.get("/ws", ws_handler)])
+    app.router.add_static("/static", STATIC)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", PORT).start()

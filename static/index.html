@@ -56,6 +56,11 @@
     <h2>Audioanalyse</h2>
     <label class="sw">Analyse aktiv <input type="checkbox" id="aOn"></label>
     <select id="aDev"><option value="">Standard-Eingang</option></select>
+    <select id="aRange">
+      <option value="120,150">Techno (120–150 BPM)</option>
+      <option value="140,185">Hard Techno (140–185 BPM)</option>
+      <option value="70,180">Breit (70–180 BPM)</option>
+    </select>
     <label class="sw">Beat-Phase mitsynchronisieren <input type="checkbox" id="aPhase" checked></label>
     <div class="row"><span class="mute">Latenz-Offset (ms)</span><input type="number" id="aLat" value="0" step="5"></div>
     <div class="meter"><div id="level"></div></div>
@@ -63,6 +68,7 @@
   </section>
 </main>
 
+<script src="/static/analyzer.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const store = {
@@ -169,9 +175,7 @@ class Rms extends AudioWorkletProcessor {
 }
 registerProcessor('rms', Rms);`;
 
-const MIN_BPM = 70, MAX_BPM = 180, WINDOW_S = 10;
-let lastT = 0, ctx, stream, node, hop, env = [], tOffset = Infinity, prev = 0;
-let estimates = [], lastSent = 0, timer;
+let ctx, stream, node, tracker, tOffset = Infinity, lastT = 0, timer, lastPhaseSent = 0;
 
 async function listAudio() {
   const keep = store.get('audioDev', '');
@@ -189,14 +193,18 @@ async function startAudio() {
   } });
   await listAudio();
   ctx = new AudioContext({ latencyHint: 'interactive' });
-  hop = 128 / ctx.sampleRate;
   const url = URL.createObjectURL(new Blob([workletSrc], { type: 'text/javascript' }));
   await ctx.audioWorklet.addModule(url);
   const src = ctx.createMediaStreamSource(stream);
-  const lp = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 200, Q: 0.7 });
+  // kick band only (~45-120 Hz): steep low-pass (2 stages) + high-pass
+  const hp = new BiquadFilterNode(ctx, { type: 'highpass', frequency: 45, Q: 0.7 });
+  const lp1 = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 120, Q: 0.7 });
+  const lp2 = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 120, Q: 0.7 });
   node = new AudioWorkletNode(ctx, 'rms');
-  src.connect(lp).connect(node);
-  env = []; estimates = []; tOffset = Infinity; prev = 0;
+  src.connect(hp).connect(lp1).connect(lp2).connect(node);
+  const [minBpm, maxBpm] = $('aRange').value.split(',').map(Number);
+  tracker = new Tracker(128 / ctx.sampleRate, { minBpm, maxBpm });
+  tOffset = Infinity;
   node.port.onmessage = e => onBlocks(e.data);
   timer = setInterval(analyse, 1000);
   $('aInfo').textContent = 'Höre zu…';
@@ -205,7 +213,7 @@ async function startAudio() {
 function stopAudio() {
   clearInterval(timer);
   node?.disconnect(); stream?.getTracks().forEach(t => t.stop()); ctx?.close();
-  ctx = stream = node = null;
+  ctx = stream = node = tracker = null;
   $('level').style.width = '0'; $('aInfo').textContent = 'Aus';
 }
 
@@ -213,74 +221,40 @@ function onBlocks({ t, v }) {
   // map audio clock -> performance clock (min tracks the least-delayed message)
   tOffset = Math.min(tOffset, performance.now() - t * 1000);
   lastT = t;
-  let peak = 0;
-  for (const x of v) {
-    const l = Math.log1p(1000 * x);
-    env.push(Math.max(0, l - prev));  // half-wave flux of log energy = onset strength
-    prev = l; peak = Math.max(peak, x);
-  }
-  $('level').style.width = Math.min(100, peak * 400) + '%';
-  const max = Math.ceil(WINDOW_S / hop);
-  if (env.length > max) env = env.slice(env.length - max);
+  tracker.push(v);
+  $('level').style.width = Math.min(100, Math.max(...v) * 400) + '%';
 }
 
 function analyse() {
-  const n = env.length;
-  if (n < 5 / hop) return;                       // need ~5 s of signal
-  const mean = env.reduce((a, b) => a + b, 0) / n;
-  const x = env.map(v => v - mean);
-  const lo = Math.floor(60 / MAX_BPM / hop), hi = Math.ceil(60 / MIN_BPM / hop);
-  const ac = [];
-  for (let lag = lo - 1; lag <= hi + 1; lag++) {
-    let s = 0; for (let i = lag; i < n; i++) s += x[i] * x[i - lag];
-    ac[lag] = s / (n - lag);
+  const r = tracker?.analyse();
+  if (!r) return;
+  const pct = Math.min(100, Math.round(r.conf / 6 * 100));
+  if (!r.valid) {
+    $('aInfo').textContent = tracker.lock
+      ? `Gelockt ${tracker.lock.toFixed(1)} BPM – kein Kick (Breakdown?), halte Tempo`
+      : `Suche Tempo… (Sicherheit ${pct}%)`;
+    return;
   }
-  let best = 0, bestLag = 0;
-  for (let lag = lo; lag <= hi; lag++) {
-    const bpm = 60 / (lag * hop);
-    const w = Math.exp(-0.5 * (Math.log2(bpm / 120) / 0.6) ** 2);   // prefer ~120 BPM to avoid octave errors
-    const s = ac[lag] * w;
-    if (ac[lag] > ac[lag - 1] && ac[lag] >= ac[lag + 1] && s > best) { best = s; bestLag = lag; }
+  $('aInfo').textContent = `Gelockt: ${r.bpm.toFixed(1)} BPM · Sicherheit ${pct}%`;
+  if (Math.abs(r.bpm - curBpm) > 0.05) setBpm(Math.round(r.bpm * 100) / 100);
+  if ($('aPhase').checked && performance.now() - lastPhaseSent > 2000) {
+    const agoMs = r.agoSamples * tracker.hop * 1000
+      + (performance.now() - (tOffset + lastT * 1000))
+      + (ctx.baseLatency || 0) * 1000 + (+$('aLat').value || 0);
+    send({ type: 'phase', ago_ms: agoMs });
+    lastPhaseSent = performance.now();
   }
-  if (!bestLag) { $('aInfo').textContent = 'Kein Tempo erkannt'; return; }
-  // parabolic interpolation for sub-sample lag
-  const a = ac[bestLag - 1], b = ac[bestLag], c = ac[bestLag + 1];
-  const d = (a - 2 * b + c) ? 0.5 * (a - c) / (a - 2 * b + c) : 0;
-  const period = (bestLag + d) * hop;
-  const bpm = 60 / period;
-
-  estimates.push(bpm); estimates = estimates.slice(-5);
-  const med = [...estimates].sort((p, q) => p - q)[estimates.length >> 1];
-  $('aInfo').textContent = `Erkannt: ${med.toFixed(1)} BPM`;
-  if (estimates.length < 3) return;
-  if (Math.abs(med - curBpm) > 0.3) setBpm(Math.round(med * 10) / 10);
-
-  if ($('aPhase').checked && performance.now() - lastSent > 3000) {
-    sendPhase(period / hop);
-    lastSent = performance.now();
-  }
-}
-
-// find the beat-grid phase that best matches the onsets, then report when the last beat happened
-function sendPhase(periodSamples) {
-  const n = env.length, P = periodSamples;
-  let best = -1, bestPhi = 0;
-  for (let phi = 0; phi < P; phi += 1) {
-    let s = 0;
-    for (let k = phi; k < n; k += P) s += env[Math.round(k)] || 0;
-    if (s > best) { best = s; bestPhi = phi; }
-  }
-  const lastIdx = bestPhi + Math.floor((n - 1 - bestPhi) / P) * P;
-  const agoMs = (n - 1 - lastIdx) * hop * 1000
-    + (performance.now() - (tOffset + lastT * 1000))
-    + (ctx.baseLatency || 0) * 1000 + (+$('aLat').value || 0);
-  send({ type: 'phase', ago_ms: agoMs });
 }
 
 $('aLat').value = store.get('lat', 0);
 $('aLat').onchange = e => store.set('lat', +e.target.value);
 $('aDev').onchange = async e => {
   store.set('audioDev', e.target.value);
+  if ($('aOn').checked) { stopAudio(); await startAudio(); }
+};
+$('aRange').value = store.get('range', '120,150');
+$('aRange').onchange = async e => {
+  store.set('range', e.target.value);
   if ($('aOn').checked) { stopAudio(); await startAudio(); }
 };
 $('aOn').onchange = async e => {
