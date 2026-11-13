@@ -12,7 +12,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-14,       name: link-beat-sync-macos-arm64, sep: ":" }
+          - { os: macos-latest,      name: link-beat-sync-macos-arm64, sep: ":" }
           - { os: macos-15-intel, name: link-beat-sync-macos-x64,   sep: ":" }
           - { os: windows-latest, name: link-beat-sync-windows.exe, sep: ";" }
     runs-on: ${{ matrix.os }}
