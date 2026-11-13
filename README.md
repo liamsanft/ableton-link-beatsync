@@ -1,7 +1,15 @@
 # Link Beat Sync
 Tap-Tempo (Klick / Leertaste / MIDI) und optionale Audioanalyse (BPM + Beat-Phase) → Ableton Link.
 
-Start: macOS `start.command` (Doppelklick), Windows `start.bat`. Beim ersten Start wird `.venv` angelegt (Python 3.9+ nötig).
+## Für Endnutzer (ohne Python, ohne Installation)
+Die passende Datei von der [Releases-Seite](https://github.com/liamsanft/ableton-link-beatsync/releases/latest) laden und starten:
+- **macOS (Apple Silicon)**: `link-beat-sync-macos-arm64`, **macOS (Intel)**: `link-beat-sync-macos-x64` – im Terminal einmalig `chmod +x <Datei>` und `xattr -d com.apple.quarantine <Datei>`, dann starten (`./<Datei>`).
+- **Windows**: `link-beat-sync-windows.exe` doppelklicken (SmartScreen: „Weitere Informationen“ → „Trotzdem ausführen“).
+
+Der Browser öffnet sich automatisch auf http://localhost:8765. Mehr braucht es nicht; der Rest dieser Anleitung betrifft Entwickler.
+
+## Für Entwickler
+Start aus dem Quellcode: macOS `start.command` (Doppelklick), Windows `start.bat`. Beim ersten Start wird `.venv` angelegt (Python 3.9+ nötig); ohne Python laden die Skripte stattdessen einmalig die fertige Binary aus den Releases nach `bin/`.
 Die UI öffnet sich auf http://localhost:8765 – bitte Chrome oder Edge (Web MIDI).
 Loopback-Audio: macOS BlackHole, Windows VB-Cable als Eingang wählen.
 
@@ -55,3 +63,6 @@ python3 -m venv .venv
 „Sync zurücksetzen“ verwirft Tap-Folge und gelocktes Tempo und startet die Suche neu; Tempo und Takt in Link bleiben unverändert. Der Status der Analyse hat eine Farbanzeige (grau aus, gelb Suche, grün gelockt, blau Breakdown/Tempo halten, rot Eingang weg). Wird der Audio-Eingang getrennt, wartet die Analyse und startet selbst neu, sobald ein Gerät auftaucht.
 
 Tests: `npm test` (Analyzer) und `npm run test:server` (Server, braucht `.venv`). Architektur und Konventionen: [AGENTS.md](AGENTS.md).
+
+### Standalone-Builds (Release)
+`.github/workflows/build.yml` baut mit PyInstaller je eine Datei für macOS (arm64, x64) und Windows und führt vorher die Server-Tests aus. Manuell über den Actions-Tab (Artefakte) oder per Tag: `git tag v1.0 && git push origin v1.0` veröffentlicht ein Release mit den drei Dateien. Lokal: `pip install pyinstaller && pyinstaller --onefile --add-data "static:static" --collect-all aalink server.py` (Windows: `static;static`).

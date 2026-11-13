@@ -18,7 +18,8 @@ from aalink import Link
 from aiohttp import WSMsgType, web
 
 PORT = 8765
-STATIC = Path(__file__).parent / "static"
+# In a PyInstaller build the bundled files live under sys._MEIPASS instead of next to the script.
+STATIC = Path(getattr(sys, "_MEIPASS", Path(__file__).parent)) / "static"
 MIN_BPM, MAX_BPM = 20.0, 300.0
 QUANTUM = 4
 LINK, CLIENTS, WAKE = web.AppKey("link", Link), web.AppKey("clients", set), web.AppKey("wake", asyncio.Event)
